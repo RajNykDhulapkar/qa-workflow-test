@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [labeled]
 
+permissions:
+  contents: write        # Allows pushing to branches
+  pull-requests: write   # Allows commenting on PRs
+
 concurrency:
   group: integration-qa-merge
   cancel-in-progress: false
