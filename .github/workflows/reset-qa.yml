@@ -1,7 +1,16 @@
-name: Reset QA Branch
+name: Merge to Integration QA
 
 on:
-  workflow_dispatch: # Manual trigger
+  pull_request:
+    types: [labeled]
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      head_ref:
+        required: true
+        type: string
 
 permissions:
   contents: write # Allows pushing to branches
@@ -12,106 +21,29 @@ env:
   QA_LABEL: ready-for-int-qa
 
 concurrency:
-  group: integration-qa-merge # same group as merge workflow to prevent conflicts
-  cancel-in-progress: true # cancel any in-progress merges when resetting
+  group: integration-qa-merge # ensures only one merge job runs at a time
+  cancel-in-progress: false # ensures that if a merge job is already running, it will not be cancelled
 
 jobs:
-  reset-qa:
+  merge-to-qa:
+    # For pull_request event, check label; for workflow_call, always run
+    if: github.event_name == 'workflow_call' || github.event.label.name == 'ready-for-int-qa'
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout main branch
+      - name: Set PR info
+        id: pr-info
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_call" ]; then
+            echo "pr_number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+            echo "head_ref=${{ inputs.head_ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "pr_number=${{ github.event.number }}" >> $GITHUB_OUTPUT
+            echo "head_ref=${{ github.head_ref }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout QA branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ env.QA_BRANCH }}
           fetch-depth: 0
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Reset QA branch to main
-        run: |
-          git branch -D ${{ env.QA_BRANCH }} || true
-          git checkout -b ${{ env.QA_BRANCH }}
-          git push origin ${{ env.QA_BRANCH }} --force
-
-  re-trigger-merges:
-    needs: reset-qa
-    runs-on: ubuntu-latest
-    steps:
-      - name: Get PRs to re-merge
-        id: get-prs
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const qaLabel = '${{ env.QA_LABEL }}';
-            const { data: prs } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              per_page: 100
-            });
-
-            const qaPrs = prs.filter(pr => pr.labels.some(l => l.name === qaLabel));
-
-            if (qaPrs.length === 0) {
-              console.log(`No PRs with ${qaLabel} label found`);
-              return { prs: [] };
-            }
-
-            console.log(`Found ${qaPrs.length} PRs to re-merge`);
-
-            const prData = qaPrs.map(pr => ({
-              number: pr.number,
-              title: pr.title
-            }));
-
-            return { prs: prData };
-          result-encoding: json
-
-      - name: Re-trigger merges via label toggle
-        if: fromJSON(steps.get-prs.outputs.result).prs[0] != null
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prData = ${{ steps.get-prs.outputs.result }};
-            const qaLabel = '${{ env.QA_LABEL }}';
-
-            if (prData.prs.length === 0) {
-              console.log('No PRs to re-merge');
-              return;
-            }
-
-            console.log(`Re-triggering ${prData.prs.length} PR(s) via label toggle`);
-
-            for (const pr of prData.prs) {
-              const { number, title } = pr;
-              console.log(`Toggling label for PR #${number}: ${title}`);
-              
-              try {
-                // Remove label
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: number,
-                  name: qaLabel
-                });
-
-                await new Promise(resolve => setTimeout(resolve, 1000));
-
-                // Re-add label (triggers merge workflow)
-                await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: number,
-                  labels: [qaLabel]
-                });
-
-                console.log(`✅ Label toggled for PR #${number}`);
-              } catch (error) {
-                console.log(`❌ Failed to toggle label for PR #${number}: ${error.message}`);
-              }
-            }
-
-            console.log('All labels toggled. Merge workflows will run after this job completes.');

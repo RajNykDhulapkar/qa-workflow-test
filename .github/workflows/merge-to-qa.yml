@@ -3,6 +3,14 @@ name: Merge to Integration QA
 on:
   pull_request:
     types: [labeled]
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      head_ref:
+        required: true
+        type: string
 
 permissions:
   contents: write # Allows pushing to branches
@@ -18,10 +26,22 @@ concurrency:
 
 jobs:
   merge-to-qa:
-    if: github.event.label.name == 'ready-for-int-qa'
+    # For pull_request event, check label; for workflow_call, always run
+    if: github.event_name == 'workflow_call' || github.event.label.name == 'ready-for-int-qa'
     runs-on: ubuntu-latest
 
     steps:
+      - name: Set PR info
+        id: pr-info
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_call" ]; then
+            echo "pr_number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+            echo "head_ref=${{ inputs.head_ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "pr_number=${{ github.event.number }}" >> $GITHUB_OUTPUT
+            echo "head_ref=${{ github.head_ref }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout QA branch
         uses: actions/checkout@v4
         with:
@@ -37,8 +57,8 @@ jobs:
         id: merge
         continue-on-error: true
         run: |
-          echo "Attempting to merge ${{ github.head_ref }} into ${{ env.QA_BRANCH }}"
-          git merge origin/${{ github.head_ref }} --no-ff -m "Merge PR #${{ github.event.number }}"
+          echo "Attempting to merge ${{ steps.pr-info.outputs.head_ref }} into ${{ env.QA_BRANCH }}"
+          git merge origin/${{ steps.pr-info.outputs.head_ref }} --no-ff -m "Merge PR #${{ steps.pr-info.outputs.pr_number }}"
 
       - name: Push to remote
         id: push
@@ -53,7 +73,7 @@ jobs:
         with:
           script: |
             await github.rest.issues.createComment({
-              issue_number: context.payload.pull_request.number,
+              issue_number: ${{ steps.pr-info.outputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: `✅ Successfully merged to \`${{ env.QA_BRANCH }}\``
@@ -66,16 +86,17 @@ jobs:
           script: |
             const qaBranch = '${{ env.QA_BRANCH }}';
             const qaLabel = '${{ env.QA_LABEL }}';
+            const headRef = '${{ steps.pr-info.outputs.head_ref }}';
             await github.rest.issues.createComment({
-              issue_number: context.payload.pull_request.number,
+              issue_number: ${{ steps.pr-info.outputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❌ **Merge conflict detected**\n\nCannot automatically merge to \`${qaBranch}\`.\n\nTo resolve manually:\n\`\`\`bash\ngit checkout ${qaBranch}\ngit pull origin ${qaBranch}\ngit merge origin/${{ github.head_ref }}\n# Resolve conflicts, then:\ngit push origin ${qaBranch}\n\`\`\`\n\nAfter pushing, remove and re-add the \`${qaLabel}\` label to retry.`
+              body: `❌ **Merge conflict detected**\n\nCannot automatically merge to \`${qaBranch}\`.\n\nTo resolve manually:\n\`\`\`bash\ngit checkout ${qaBranch}\ngit pull origin ${qaBranch}\ngit merge origin/${headRef}\n# Resolve conflicts, then:\ngit push origin ${qaBranch}\n\`\`\`\n\nAfter pushing, remove and re-add the \`${qaLabel}\` label to retry.`
             });
 
             // Remove label so it can be re-added after manual fix
             await github.rest.issues.removeLabel({
-              issue_number: context.payload.pull_request.number,
+              issue_number: ${{ steps.pr-info.outputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: qaLabel
@@ -89,7 +110,7 @@ jobs:
             const qaBranch = '${{ env.QA_BRANCH }}';
             const qaLabel = '${{ env.QA_LABEL }}';
             await github.rest.issues.createComment({
-              issue_number: context.payload.pull_request.number,
+              issue_number: ${{ steps.pr-info.outputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: `❌ **Push failed**\n\nMerge succeeded but could not push to \`${qaBranch}\`. This may be due to a race condition or branch protection rules.\n\nThe \`${qaLabel}\` label has been removed. Re-add it to retry.`
@@ -97,7 +118,7 @@ jobs:
 
             // Remove label so it can be re-added to retry
             await github.rest.issues.removeLabel({
-              issue_number: context.payload.pull_request.number,
+              issue_number: ${{ steps.pr-info.outputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
               name: qaLabel
