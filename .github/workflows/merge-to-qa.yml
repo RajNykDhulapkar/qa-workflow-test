@@ -22,15 +22,16 @@ env:
 
 jobs:
   merge-to-qa:
-    # For pull_request event, check label; for workflow_call, always run
-    if: github.event_name == 'workflow_call' || github.event.label.name == 'ready-for-int-qa'
+    # Run if: inputs provided (called from reset workflow) OR correct label added (direct trigger)
+    if: inputs.pr_number != null || github.event.label.name == 'ready-for-int-qa'
     runs-on: ubuntu-latest
 
     steps:
       - name: Set PR info
         id: pr-info
         run: |
-          if [ "${{ github.event_name }}" == "workflow_call" ]; then
+          # Check if inputs are provided (called via workflow_call)
+          if [ -n "${{ inputs.pr_number }}" ]; then
             echo "pr_number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
             echo "head_ref=${{ inputs.head_ref }}" >> $GITHUB_OUTPUT
           else
@@ -109,7 +110,7 @@ jobs:
               issue_number: ${{ steps.pr-info.outputs.pr_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❌ **Push failed**\n\nMerge succeeded but could not push to \`${qaBranch}\`. This may be due to a race condition or branch protection rules.\n\nThe \`${qaLabel}\` label has been removed. Re-add it to retry.`
+              body: `❌ **Push failed**\n\nMerge succeeded but could not push to \`${qaBranch}\`.`
             });
 
             // Remove label so it can be re-added to retry
