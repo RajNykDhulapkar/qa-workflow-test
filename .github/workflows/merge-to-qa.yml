@@ -20,10 +20,6 @@ env:
   QA_BRANCH: integration-qa-branch
   QA_LABEL: ready-for-int-qa
 
-concurrency:
-  group: integration-qa-merge # ensures only one merge job runs at a time
-  cancel-in-progress: false # ensures that if a merge job is already running, it will not be cancelled
-
 jobs:
   merge-to-qa:
     # For pull_request event, check label; for workflow_call, always run
