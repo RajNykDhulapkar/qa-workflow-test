@@ -5,44 +5,50 @@ on:
     types: [labeled]
 
 permissions:
-  contents: write        # Allows pushing to branches
-  pull-requests: write   # Allows commenting on PRs
+  contents: write # Allows pushing to branches
+  pull-requests: write # Allows commenting on PRs
+
+env:
+  QA_BRANCH: integration-qa-branch
+  QA_LABEL: ready-for-int-qa
 
 concurrency:
-  group: integration-qa-merge
-  cancel-in-progress: false
+  group: integration-qa-merge # ensures only one merge job runs at a time
+  cancel-in-progress: false # ensures that if a merge job is already running, it will not be cancelled
 
 jobs:
   merge-to-qa:
-    if: github.event.label.name == 'ready-for-int-qa'
+    if: github.event.label.name == env.QA_LABEL
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout integration-qa-branch
+      - name: Checkout QA branch
         uses: actions/checkout@v4
         with:
-          ref: integration-qa-branch
+          ref: ${{ env.QA_BRANCH }}
           fetch-depth: 0
-      
+
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      
+
       - name: Merge PR branch
         id: merge
         continue-on-error: true
         run: |
-          echo "Attempting to merge ${{ github.head_ref }} into integration-qa-branch"
-          git merge origin/${{ github.head_ref }} --no-ff -m "Merge PR #${{ github.event.number }}: ${{ github.event.pull_request.title }}"
-      
+          echo "Attempting to merge ${{ github.head_ref }} into ${{ env.QA_BRANCH }}"
+          git merge origin/${{ github.head_ref }} --no-ff -m "Merge PR #${{ github.event.number }}"
+
       - name: Push to remote
+        id: push
         if: steps.merge.outcome == 'success'
+        continue-on-error: true
         run: |
-          git push origin integration-qa-branch
-      
+          git push origin ${{ env.QA_BRANCH }}
+
       - name: Comment on success
-        if: steps.merge.outcome == 'success'
+        if: steps.merge.outcome == 'success' && steps.push.outcome == 'success'
         uses: actions/github-script@v7
         with:
           script: |
@@ -50,31 +56,53 @@ jobs:
               issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ Successfully merged to \`integration-qa-branch\`\n\nYou can now manually trigger the QA deployment.`
+              body: `✅ Successfully merged to \`${{ env.QA_BRANCH }}\``
             });
-      
-      - name: Comment on conflict
+
+      - name: Comment on merge conflict
         if: steps.merge.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           script: |
+            const qaBranch = '${{ env.QA_BRANCH }}';
+            const qaLabel = '${{ env.QA_LABEL }}';
             await github.rest.issues.createComment({
               issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `❌ **Merge conflict detected**\n\nCannot automatically merge to \`integration-qa-branch\`.\n\nTo resolve manually:\n\`\`\`bash\ngit checkout integration-qa-branch\ngit pull origin integration-qa-branch\ngit merge origin/${{ github.head_ref }}\n# Resolve conflicts, then:\ngit push origin integration-qa-branch\n\`\`\`\n\nAfter pushing, remove and re-add the \`ready-for-int-qa\` label to retry.`
+              body: `❌ **Merge conflict detected**\n\nCannot automatically merge to \`${qaBranch}\`.\n\nTo resolve manually:\n\`\`\`bash\ngit checkout ${qaBranch}\ngit pull origin ${qaBranch}\ngit merge origin/${{ github.head_ref }}\n# Resolve conflicts, then:\ngit push origin ${qaBranch}\n\`\`\`\n\nAfter pushing, remove and re-add the \`${qaLabel}\` label to retry.`
             });
-            
+
+            // Remove label so it can be re-added after manual fix
             await github.rest.issues.removeLabel({
               issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              name: 'ready-for-int-qa'
-            }).catch(() => {
-              // Label might have been removed already
-              console.log('Label already removed or does not exist');
+              name: qaLabel
             });
-      
-      - name: Fail job if merge failed
-        if: steps.merge.outcome == 'failure'
+
+      - name: Comment on push failure
+        if: steps.merge.outcome == 'success' && steps.push.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const qaBranch = '${{ env.QA_BRANCH }}';
+            const qaLabel = '${{ env.QA_LABEL }}';
+            await github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `❌ **Push failed**\n\nMerge succeeded but could not push to \`${qaBranch}\`. This may be due to a race condition or branch protection rules.\n\nThe \`${qaLabel}\` label has been removed. Re-add it to retry.`
+            });
+
+            // Remove label so it can be re-added to retry
+            await github.rest.issues.removeLabel({
+              issue_number: context.payload.pull_request.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: qaLabel
+            });
+
+      - name: Fail job if merge or push failed
+        if: steps.merge.outcome == 'failure' || steps.push.outcome == 'failure'
         run: exit 1
