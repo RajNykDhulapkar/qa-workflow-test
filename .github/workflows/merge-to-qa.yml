@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   merge-to-qa:
-    if: github.event.label.name == env.QA_LABEL
+    if: github.event.label.name == 'ready-for-int-qa'
     runs-on: ubuntu-latest
 
     steps:
