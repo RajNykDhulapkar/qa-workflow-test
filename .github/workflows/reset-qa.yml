@@ -1,16 +1,7 @@
-name: Merge to Integration QA
+name: Reset QA Branch
 
 on:
-  pull_request:
-    types: [labeled]
-  workflow_call:
-    inputs:
-      pr_number:
-        required: true
-        type: number
-      head_ref:
-        required: true
-        type: string
+  workflow_dispatch: # Manual trigger
 
 permissions:
   contents: write # Allows pushing to branches
@@ -21,29 +12,82 @@ env:
   QA_LABEL: ready-for-int-qa
 
 concurrency:
-  group: integration-qa-merge # ensures only one merge job runs at a time
-  cancel-in-progress: false # ensures that if a merge job is already running, it will not be cancelled
+  group: integration-qa-merge # same group as merge workflow to prevent conflicts
+  cancel-in-progress: true # cancel any in-progress merges when resetting
 
 jobs:
-  merge-to-qa:
-    # For pull_request event, check label; for workflow_call, always run
-    if: github.event_name == 'workflow_call' || github.event.label.name == 'ready-for-int-qa'
+  reset-qa:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Set PR info
-        id: pr-info
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_call" ]; then
-            echo "pr_number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
-            echo "head_ref=${{ inputs.head_ref }}" >> $GITHUB_OUTPUT
-          else
-            echo "pr_number=${{ github.event.number }}" >> $GITHUB_OUTPUT
-            echo "head_ref=${{ github.head_ref }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Checkout QA branch
+      - name: Checkout main branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.QA_BRANCH }}
+          ref: main
           fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Reset QA branch to main
+        run: |
+          git branch -D ${{ env.QA_BRANCH }} || true
+          git checkout -b ${{ env.QA_BRANCH }}
+          git push origin ${{ env.QA_BRANCH }} --force
+
+  get-prs-to-merge:
+    needs: reset-qa
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.get-prs.outputs.matrix }}
+      has_prs: ${{ steps.get-prs.outputs.has_prs }}
+    steps:
+      - name: Get PRs to re-merge
+        id: get-prs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const qaLabel = '${{ env.QA_LABEL }}';
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 15
+            });
+
+            const qaPrs = prs.filter(pr => pr.labels.some(l => l.name === qaLabel));
+
+            if (qaPrs.length === 0) {
+              console.log(`No PRs with ${qaLabel} label found`);
+              core.setOutput('matrix', JSON.stringify({ include: [] }));
+              core.setOutput('has_prs', 'false');
+              return;
+            }
+
+            console.log(`Found ${qaPrs.length} PRs to re-merge`);
+
+            // Create matrix for workflow_call
+            const matrix = {
+              include: qaPrs.map(pr => ({
+                pr_number: pr.number,
+                head_ref: pr.head.ref,
+                title: pr.title
+              }))
+            };
+
+            console.log('Matrix:', JSON.stringify(matrix, null, 2));
+            core.setOutput('matrix', JSON.stringify(matrix));
+            core.setOutput('has_prs', 'true');
+
+  merge-prs:
+    needs: get-prs-to-merge
+    if: needs.get-prs-to-merge.outputs.has_prs == 'true'
+    strategy:
+      max-parallel: 1 # Run sequentially to avoid conflicts
+      fail-fast: false # Continue with other PRs if one fails
+      matrix: ${{ fromJSON(needs.get-prs-to-merge.outputs.matrix) }}
+    uses: ./.github/workflows/merge-to-int-qa-branch.yml
+    with:
+      pr_number: ${{ matrix.pr_number }}
+      head_ref: ${{ matrix.head_ref }}
