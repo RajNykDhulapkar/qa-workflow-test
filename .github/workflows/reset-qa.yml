@@ -87,7 +87,7 @@ jobs:
       max-parallel: 1 # Run sequentially to avoid conflicts
       fail-fast: false # Continue with other PRs if one fails
       matrix: ${{ fromJSON(needs.get-prs-to-merge.outputs.matrix) }}
-    uses: ./.github/workflows/merge-to-int-qa-branch.yml
+    uses: ./.github/workflows/merge-to-qa.yml
     with:
       pr_number: ${{ matrix.pr_number }}
       head_ref: ${{ matrix.head_ref }}
