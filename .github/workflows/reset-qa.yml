@@ -49,14 +49,10 @@ jobs:
         with:
           script: |
             const qaLabel = '${{ env.QA_LABEL }}';
-            const { data: prs } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
+            const { data: { items: qaPrs } } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${qaLabel}"`,
               per_page: 15
             });
-
-            const qaPrs = prs.filter(pr => pr.labels.some(l => l.name === qaLabel));
 
             if (qaPrs.length === 0) {
               console.log(`No PRs with ${qaLabel} label found`);
