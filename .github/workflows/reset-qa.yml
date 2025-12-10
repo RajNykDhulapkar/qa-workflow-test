@@ -52,7 +52,7 @@ jobs:
             const { repository } = await github.graphql(`
               query($owner: String!, $repo: String!, $label: String!) {
                 repository(owner: $owner, name: $repo) {
-                  pullRequests(first: 100, states: OPEN, labels: [$label]) {
+                  pullRequests(first: 3, states: OPEN, labels: [$label]) {
                     nodes {
                       number
                       headRefName
